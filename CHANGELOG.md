@@ -2,6 +2,11 @@
 
 ## Next
 
+### Added
+
+- Experimental: `ExploratoryRetriever` (`neo4j_graphrag.experimental.retrievers`), a retriever that explores the graph from several seed nodes with independent explorers guided by a System One Model. An LLM splits the question into information requirements (slots); each explorer sends one request per turn to the System One Model, whose probabilities decide which branches to follow and when to stop; the explorers' reports are merged into paths written in natural language. Seeds come from existing retrievers (chunks of a lexical graph are replaced by their entities), nodes with many neighbors are explored through relationship types, and `hops_per_turn` lets the model see chains of relationships. See the user guide for the known limits (lists and aggregations).
+- Experimental: `neo4j_graphrag.experimental.system_one` with `SystemOneModelInterface`, provider-agnostic question and answer types (`predicate`, `choice`, `score`) and `OpenAIDecisionModel`, a client for the OpenAI Decisions API (`POST /v1/decisions`). It uses `client.decisions.create` with the OpenAI SDK 3.26 or later and falls back to `client.post` on older versions; requests time out after 10 seconds by default. Other providers only need to implement `_decide`.
+
 ### Changed
 
 - `SchemaExtractionTemplate` now tells the model to define each node type once. A node label is global and carries one property and constraint set.
