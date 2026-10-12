@@ -229,6 +229,36 @@ ToolsRetriever
     :members: search
 
 
+ExploratoryRetriever
+====================
+
+.. note:: Experimental: the interface may change without notice.
+
+.. autoclass:: neo4j_graphrag.experimental.retrievers.ExploratoryRetriever
+    :members: search
+
+.. autoclass:: neo4j_graphrag.experimental.retrievers.ExplorationConfig
+
+
+System One Models
+=================
+
+.. note:: Experimental: the interface may change without notice.
+
+.. autoclass:: neo4j_graphrag.experimental.system_one.SystemOneModelInterface
+    :members: decide, adecide
+
+.. autoclass:: neo4j_graphrag.experimental.system_one.OpenAIDecisionModel
+
+.. autoclass:: neo4j_graphrag.experimental.system_one.PredicateQuestion
+
+.. autoclass:: neo4j_graphrag.experimental.system_one.ChoiceQuestion
+
+.. autoclass:: neo4j_graphrag.experimental.system_one.ScoreQuestion
+
+.. autoclass:: neo4j_graphrag.experimental.system_one.DecisionResponse
+
+
 *******************
 External Retrievers
 *******************

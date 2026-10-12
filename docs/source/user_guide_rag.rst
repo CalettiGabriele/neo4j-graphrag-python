@@ -1413,6 +1413,111 @@ The ToolsRetriever integrates seamlessly with the GraphRAG pipeline for automate
 
 See :ref:`toolsretriever`.
 
+.. _exploratory-retriever-user-guide:
+
+Exploratory Retriever (experimental)
+------------------------------------
+
+.. warning::
+
+    The ExploratoryRetriever and the System One Models are in the `experimental` namespace:
+    their interface may change without notice, and the OpenAI Decisions API they rely on
+    is in public beta.
+
+The ExploratoryRetriever answers questions that need to follow several relationships of the graph
+("which suppliers of the main customer of ACME were sanctioned?"), where the nodes that lead to the answer
+do not look like the question and a vector search cannot find them.
+
+It splits the work between two kinds of models:
+
+- an LLM, called once per search, that writes the *slots*: the pieces of information the context must contain;
+- a **System One Model**, a fast model that does not write text but answers closed questions with probabilities
+  (for instance the OpenAI Decisions API).
+
+How a search works:
+
+1. The LLM writes the slots.
+2. The seed retrievers (any retriever returning the node `elementId`, such as `VectorRetriever`) find the starting nodes.
+   Chunks created by `SimpleKGPipeline` are replaced by the entities extracted from them.
+3. One **explorer** starts from each seed. Explorers are independent and run in parallel. At every turn an explorer
+   reads the neighbors of its frontier and sends **one** request to the System One Model asking how to proceed,
+   which candidates are worth keeping and which slots are satisfied. The thresholds of `ExplorationConfig` turn
+   the probabilities into decisions: continue, stop and discard, or stop and return. Nodes with too many neighbors are
+   explored through their relationship types.
+4. The reports are merged, deduplicated and ranked. Every result is a path of the graph written in natural language.
+
+.. code:: python
+
+    import neo4j
+    from neo4j_graphrag.experimental.retrievers import ExplorationConfig, ExploratoryRetriever
+    from neo4j_graphrag.experimental.system_one import OpenAIDecisionModel
+    from neo4j_graphrag.generation import GraphRAG
+    from neo4j_graphrag.llm import OpenAILLM
+    from neo4j_graphrag.retrievers import VectorRetriever
+
+    driver = neo4j.GraphDatabase.driver(URI, auth=AUTH)
+
+    retriever = ExploratoryRetriever(
+        driver,
+        system_one_model=OpenAIDecisionModel(),  # needs `pip install "neo4j-graphrag[openai]"`
+        slot_llm=OpenAILLM(model_name="gpt-4o"),
+        seed_retrievers=[VectorRetriever(driver, "entity-embeddings", embedder)],
+        config=ExplorationConfig(num_seeds=5, max_turns=4, hops_per_turn=1),
+    )
+
+    rag = GraphRAG(retriever=retriever, llm=OpenAILLM(model_name="gpt-4o"))
+    response = rag.search(
+        "Which suppliers of the main customer of ACME were sanctioned?",
+        retriever_config={"hops_per_turn": 2},
+    )
+
+`num_seeds`, `max_turns` and `hops_per_turn` can be changed for a single search through `retriever_config`.
+With `hops_per_turn=2` the model sees chains of two relationships at once, which helps with nodes that are only a bridge
+to the answer, at the price of more candidates per request.
+
+`num_seeds`, `max_turns`, `hops_per_turn` and `top_k` are validated like the parameters of the other retrievers:
+invalid values raise a `SearchValidationError`.
+
+The metadata of the result tell the outcome of the search (`sufficient`, `partial` or `not_found`), which slots were
+covered and what each explorer did. The `degraded` key tells whether the search ran in a degraded mode: slots that
+could not be generated, failed or timed out explorers, truncated neighborhoods, seeds not found in the database.
+Create the retriever with `return_trace=True` to also get the decision taken at every turn, which is useful to
+calibrate the thresholds.
+
+**Errors and time limits.** Errors of the slot LLM are raised. A failing explorer is reported in the metadata, but if
+every explorer fails (for instance because the System One Model cannot be reached) an `ExploratoryRetrieverError` is
+raised. `ExplorationConfig.max_search_seconds` (60 by default) bounds the duration of a search: explorers don't start
+new turns after it. `OpenAIDecisionModel` uses a 10 second request timeout and leaves retries on rate limits to its
+`rate_limit_handler`.
+
+**Privacy.** Node and relationship properties are sent to the System One Model and returned to the final LLM.
+Choose which ones with `included_properties`, by label or relationship type (`"*"` applies to the others):
+
+.. code:: python
+
+    ExplorationConfig(included_properties={"Company": ["name", "sector"], "SUPPLIED_BY": ["since"], "*": ["name"]})
+
+The text read by the models quotes the values coming from the graph and removes line breaks from them, but the content
+of the graph can still influence the decisions of the models: explore graphs built from sources you trust.
+
+.. note::
+
+    **Known limits.** Navigation prunes the graph, so it cannot guarantee completeness: questions that need every
+    element or an aggregation ("all the...", "how many...") should be answered with the
+    :ref:`Text2CypherRetriever <text2cypherretriever>`, for example combining both with a
+    :ref:`ToolsRetriever <tools-retriever-user-guide>`. The search is a single pass, and information that has been superseded
+    (a revoked sanction) is only noticed if the properties of the nodes say so: dates and status properties are always
+    included in the text the model reads (see `temporal_property_names`).
+
+`OpenAIDecisionModel` uses `client.decisions.create` with the OpenAI Python SDK 3.26 or later, and sends the same
+request with `client.post` on older versions. An `http_client` (sync or async, `httpx` or `httpx2`) is given to the
+matching client only. To use a model other than OpenAI, implement `SystemOneModelInterface`
+(see `examples/customize/system_one`).
+
+The retriever has been tested with Neo4j 5.20, 5.26 and 2026.09.
+
+See :ref:`exploratoryretriever`.
+
 .. _custom-retriever:
 
 Custom Retriever
