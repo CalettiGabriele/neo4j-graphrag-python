@@ -30,6 +30,7 @@ are listed in [the last section of this file](#customize).
 - [Hybrid retriever](./retrieve/hybrid_retriever.py)
 - [Hybrid Cypher retriever](./retrieve/hybrid_cypher_retriever.py)
 - [Text2Cypher retriever](./retrieve/text2cypher_search.py)
+- [Exploratory retriever (experimental)](./retrieve/exploratory_retriever.py)
 - [Cypher Template retriever](./retrieve/tools/cypher_template_to_tool_example.py)
 
 
@@ -67,6 +68,10 @@ are listed in [the last section of this file](#customize).
 - [Control result format for VectorCypherRetriever](customize/retrievers/result_formatter_vector_cypher_retriever.py)
 - [Use pre-filters](customize/retrievers/use_pre_filters.py)
 - [Text2Cypher: use a custom prompt](customize/retrievers/text2cypher_custom_prompt.py)
+
+### System One Models (experimental)
+
+- [Custom System One Model](customize/system_one/custom_system_one_model.py)
 
 ### LLMs
 
