@@ -16,6 +16,7 @@
 
 from .base import SystemOneModelInterface
 from .exceptions import SystemOneModelError
+from .openai_decisions import OpenAIDecisionModel
 from .types import (
     Answer,
     ChoiceAnswer,
@@ -38,6 +39,7 @@ __all__ = [
     "ChoiceOption",
     "ChoiceQuestion",
     "DecisionResponse",
+    "OpenAIDecisionModel",
     "PredicateAnswer",
     "PredicateQuestion",
     "Question",
