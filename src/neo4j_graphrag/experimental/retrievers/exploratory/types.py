@@ -23,6 +23,7 @@ from pydantic import (
     Field,
     PositiveInt,
     StringConstraints,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -218,7 +219,7 @@ class ExploratoryRetrieverModel(BaseModel):
     """Validation of the arguments of the ExploratoryRetriever."""
 
     driver_model: Neo4jDriverModel
-    llm_model: LLMModel
+    llm_model: Optional[LLMModel] = None
     system_one_model: Any
     seed_retrievers: list[Any] = Field(min_length=1)
     max_workers: PositiveInt = 8
@@ -234,11 +235,37 @@ class ExploratoryRetrieverModel(BaseModel):
         return value
 
 
+SlotDescription = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
 class ExploratorySearchModel(BaseModel):
-    """Validation of the arguments of ``ExploratoryRetriever.get_search_results``."""
+    """Validation of the arguments of ``ExploratoryRetriever.get_search_results``.
+
+    Validated with a context: ``max_slots`` (the most slots a search may have) and
+    ``has_slot_llm`` (whether slots can be generated when none are given).
+    """
 
     query_text: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     num_seeds: Optional[PositiveInt] = None
     max_turns: Optional[PositiveInt] = None
     hops_per_turn: Optional[int] = Field(default=None, ge=1, le=3)
     top_k: Optional[PositiveInt] = None
+    slots: Optional[list[SlotDescription]] = Field(default=None, min_length=1)
+
+    @field_validator("slots")
+    @classmethod
+    def _at_most_max_slots(
+        cls, value: Optional[list[str]], info: ValidationInfo
+    ) -> Optional[list[str]]:
+        limit = (info.context or {}).get("max_slots")
+        if value is not None and limit is not None and len(value) > limit:
+            raise ValueError(f"at most {limit} slots can be given (max_slots)")
+        return value
+
+    @model_validator(mode="after")
+    def _slots_or_slot_llm(self, info: ValidationInfo) -> "ExploratorySearchModel":
+        if self.slots is None and not (info.context or {}).get("has_slot_llm", True):
+            raise ValueError(
+                "slots are required: the retriever has no slot_llm to generate them"
+            )
+        return self

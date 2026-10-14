@@ -51,11 +51,14 @@ def slot_llm(content: str = SLOT_JSON) -> MagicMock:
     return llm
 
 
+_DEFAULT_LLM = object()
+
+
 def make(
     model: Any = None,
     graph: Optional[FakeGraph] = None,
     seeds: Optional[list[Any]] = None,
-    llm: Any = None,
+    llm: Any = _DEFAULT_LLM,
     **kwargs: Any,
 ) -> ExploratoryRetriever:
     driver = MagicMock(spec=neo4j.Driver)
@@ -63,7 +66,7 @@ def make(
     retriever = ExploratoryRetriever(
         driver,
         model or ScriptedModel(DEFAULT_SCRIPT),
-        llm or slot_llm(),
+        slot_llm() if llm is _DEFAULT_LLM else llm,
         seed_retrievers,
         **kwargs,
     )
@@ -81,6 +84,7 @@ def test_search_returns_paths_and_metadata() -> None:
     assert result.metadata["__retriever"] == "ExploratoryRetriever"
     assert result.metadata["status"] == "sufficient"
     assert result.metadata["slots"][0]["covered"] is True
+    assert result.metadata["slots_source"] == "generated"
     [explorer] = result.metadata["explorers"]
     assert explorer["seed"] == "acme" and explorer["status"] == "sufficient"
     assert explorer["turns"] == 2 and explorer["depth"] == 2
@@ -287,6 +291,7 @@ def test_can_be_converted_to_a_tool_with_described_parameters() -> None:
         "max_turns",
         "hops_per_turn",
         "top_k",
+        "slots",
     }
     assert params["num_seeds"]["type"] == "integer"
     assert "between 1 and 3" in params["hops_per_turn"]["description"]
@@ -362,3 +367,89 @@ def test_does_not_verify_the_neo4j_version() -> None:
     with patch("neo4j_graphrag.retrievers.base.get_version") as get_version:
         make()
     get_version.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Slots given by the caller
+# --------------------------------------------------------------------------- #
+
+CALLER_SLOT = "Suppliers of the main customer"
+
+
+def test_caller_slots_skip_the_slot_llm() -> None:
+    llm = slot_llm()
+    result = make(llm=llm).search("q", slots=[CALLER_SLOT])
+    llm.invoke.assert_not_called()
+    assert result.metadata is not None
+    assert result.metadata["slots_source"] == "caller"
+    assert result.metadata["slots"] == [
+        {
+            "name": "slot_0",
+            "description": CALLER_SLOT,
+            "covered": True,
+            "probability": 0.95,
+        }
+    ]
+    assert result.metadata["status"] == "sufficient"
+    assert result.metadata["degraded"]["slots_fallback"] is False
+    assert result.items
+
+
+def test_caller_slots_are_asked_to_the_model() -> None:
+    model = ScriptedModel(DEFAULT_SCRIPT)
+    make(model=model).search("q", slots=[CALLER_SLOT, "Their sanctions"])
+    first_input, questions = model.requests[0]
+    assert [q.name for q in questions][-2:] == ["slot_0", "slot_1"]
+    assert CALLER_SLOT in first_input and "Their sanctions" in first_input
+
+
+def test_caller_slots_are_stripped() -> None:
+    result = make().search("q", slots=[f"  {CALLER_SLOT}  "])
+    assert result.metadata is not None
+    assert result.metadata["slots"][0]["description"] == CALLER_SLOT
+
+
+@pytest.mark.parametrize("slots", [[], [""], ["   "], ["a", "b", "c"]])
+def test_invalid_caller_slots(slots: list[str]) -> None:
+    retriever = make(config=ExplorationConfig(max_slots=2))
+    with pytest.raises(SearchValidationError):
+        retriever.search("q", slots=slots)
+
+
+def test_without_slot_llm_the_slots_are_required() -> None:
+    retriever = make(llm=None)
+    assert retriever.slot_llm is None
+    with pytest.raises(SearchValidationError, match="slots are required"):
+        retriever.search("q")
+    result = retriever.search("q", slots=[CALLER_SLOT])
+    assert result.metadata is not None and result.metadata["status"] == "sufficient"
+
+
+def test_graphrag_passes_the_slots() -> None:
+    slots_llm = slot_llm()
+    retriever = make(llm=slots_llm)
+    answer_llm = slot_llm("Gamma")
+    rag = GraphRAG(retriever=retriever, llm=answer_llm)
+    answer = rag.search(
+        "Which suppliers?",
+        retriever_config={"slots": [CALLER_SLOT]},
+        return_context=True,
+    )
+    slots_llm.invoke.assert_not_called()
+    assert answer.retriever_result is not None
+    assert answer.retriever_result.metadata is not None
+    assert answer.retriever_result.metadata["slots_source"] == "caller"
+
+
+def test_tool_exposes_slots_as_an_array_of_strings() -> None:
+    retriever = make(config=ExplorationConfig(max_slots=3))
+    tool = retriever.convert_to_tool("explore", "Explores the graph")
+    parameters = tool.get_parameters()
+    slots = parameters["properties"]["slots"]
+    assert slots["type"] == "array"
+    assert slots["items"]["type"] == "string"
+    assert slots["maxItems"] == 3 and slots["minItems"] == 1
+    assert "faster" in slots["description"]
+    assert "slots" not in parameters["required"]
+    result = tool.execute(query_text="q", slots=[CALLER_SLOT])
+    assert result.metadata["slots_source"] == "caller"

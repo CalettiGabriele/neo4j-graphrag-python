@@ -333,3 +333,24 @@ def test_included_properties(driver: neo4j.Driver, ids: dict[str, str]) -> None:
     [acme, sanction] = graph.node_details([ids["ACME"], ids["Fine 2023"]])
     assert acme.properties == {"name": "ACME"}
     assert sanction.properties == {}
+
+
+def test_slots_given_by_the_caller_need_no_slot_llm(
+    driver: neo4j.Driver, ids: dict[str, str]
+) -> None:
+    model = KeywordModel(["MAIN_CUSTOMER", "SUPPLIED_BY", "RECEIVED", "SANCTIONED_BY"])
+    retriever = ExploratoryRetriever(
+        driver,
+        model,
+        None,  # no slot LLM: every search gives its slots
+        [IdsRetriever(driver, [ids["ACME"]])],
+        config=ExplorationConfig(max_turns=5),
+    )
+    result = retriever.search(
+        "Which suppliers of ACME's main customer were sanctioned?",
+        slots=["A sanction received by a supplier of the main customer"],
+    )
+    assert result.metadata is not None
+    assert result.metadata["slots_source"] == "caller"
+    assert result.metadata["status"] == "sufficient"
+    assert "SANCTIONED_BY" in "\n".join(i.content for i in result.items)

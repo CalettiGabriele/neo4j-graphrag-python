@@ -43,7 +43,7 @@ from .graph_access import GraphAccess
 from .merge import merge_reports
 from .prompts import MissionTemplates
 from .seeds import SeedResolver
-from .slots import SlotGenerator
+from .slots import SlotGeneration, SlotGenerator
 from .types import (
     ExplorationConfig,
     ExploratoryRetrieverModel,
@@ -55,7 +55,7 @@ from .types import (
 from .verbalizer import NodeFormatter, RelationshipFormatter, Verbalizer
 
 if TYPE_CHECKING:
-    from neo4j_graphrag.tool import Tool
+    from neo4j_graphrag.tool import ObjectParameter, Tool
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,11 @@ DEFAULT_PARAMETER_DESCRIPTIONS = {
     "max_turns": "Optional. Maximum number of exploration steps from each starting point.",
     "hops_per_turn": "Optional. Relationships looked ahead at every step, between 1 and 3.",
     "top_k": "Optional. Maximum number of nodes in the results.",
+    "slots": (
+        "Optional. The pieces of information the answer needs, one short sentence each "
+        "(e.g. ['the main customer of ACME', 'the suppliers of that customer']). "
+        "Giving them makes the search faster."
+    ),
 }
 
 
@@ -128,8 +133,9 @@ class ExploratoryRetriever(Retriever):
     Args:
         driver (neo4j.Driver): The Neo4j Python driver.
         system_one_model (SystemOneModelInterface): Model that judges the branches.
-        slot_llm (LLMInterface, LLMInterfaceV2 or LangChain chat model): LLM that generates
-            the slots, once per search.
+        slot_llm (Optional[LLMInterface, LLMInterfaceV2 or LangChain chat model]): LLM that
+            generates the slots when a search does not give them, once per search. Can be
+            None: every search must then pass its ``slots``.
         seed_retrievers (Sequence[Retriever]): Retrievers that find the seeds. Their raw
             results must contain the ``elementId`` of the nodes.
         config (Optional[ExplorationConfig]): Budget and thresholds.
@@ -154,7 +160,7 @@ class ExploratoryRetriever(Retriever):
         self,
         driver: neo4j.Driver,
         system_one_model: SystemOneModelInterface,
-        slot_llm: Union[LLMInterface, LLMInterfaceV2, Any],
+        slot_llm: Optional[Union[LLMInterface, LLMInterfaceV2, Any]],
         seed_retrievers: Sequence[Retriever],
         config: Optional[ExplorationConfig] = None,
         lexical_graph_config: Optional[LexicalGraphConfig] = None,
@@ -168,7 +174,7 @@ class ExploratoryRetriever(Retriever):
         try:
             validated = ExploratoryRetrieverModel(
                 driver_model=Neo4jDriverModel(driver=driver),
-                llm_model=LLMModel(llm=slot_llm),
+                llm_model=LLMModel(llm=slot_llm) if slot_llm is not None else None,
                 system_one_model=system_one_model,
                 seed_retrievers=list(seed_retrievers),
                 max_workers=max_workers,
@@ -179,7 +185,7 @@ class ExploratoryRetriever(Retriever):
 
         super().__init__(validated.driver_model.driver, validated.neo4j_database)
         self.system_one_model = system_one_model
-        self.slot_llm = validated.llm_model.llm
+        self.slot_llm = validated.llm_model.llm if validated.llm_model else None
         self.seed_retrievers: list[Retriever] = validated.seed_retrievers
         self.config = config or ExplorationConfig()
         self.lexical_graph_config = lexical_graph_config or LexicalGraphConfig()
@@ -227,6 +233,24 @@ class ExploratoryRetriever(Retriever):
         }
         return super().convert_to_tool(name, description, descriptions)
 
+    def get_parameters(
+        self, parameter_descriptions: Optional[dict[str, str]] = None
+    ) -> "ObjectParameter":
+        """The tool parameters, with ``slots`` typed as an array of strings (the generic
+        inference of the base class only knows arrays of numbers)."""
+        from neo4j_graphrag.tool import ArrayParameter, StringParameter
+
+        parameters = super().get_parameters(parameter_descriptions)
+        if "slots" in parameters.properties:
+            parameters.properties["slots"] = ArrayParameter(
+                description=parameters.properties["slots"].description,
+                items=StringParameter(description="One piece of information to find."),
+                min_items=1,
+                max_items=self.config.max_slots,
+                required=False,
+            )
+        return parameters
+
     def get_search_results(
         self,
         query_text: str,
@@ -234,6 +258,7 @@ class ExploratoryRetriever(Retriever):
         max_turns: Optional[int] = None,
         hops_per_turn: Optional[int] = None,
         top_k: Optional[int] = None,
+        slots: Optional[list[str]] = None,
     ) -> RawSearchResult:
         """Explore the graph and return the paths that are relevant to the question.
 
@@ -245,6 +270,11 @@ class ExploratoryRetriever(Retriever):
                 (1 to 3). Overrides the configuration.
             top_k (Optional[int]): Maximum number of nodes returned. Overrides ``max_output_items``.
                 The nodes are presented in groups, see ``ExplorationConfig.group_paths``.
+            slots (Optional[list[str]]): The pieces of information the answer needs, one short
+                sentence each (at most ``max_slots``). When given, no LLM call is made to
+                generate them, which saves the slowest step of a search; an agent that
+                already planned the question can pass them. When omitted, ``slot_llm``
+                generates them.
 
         Raises:
             SearchValidationError: If the arguments are not valid.
@@ -259,12 +289,19 @@ class ExploratoryRetriever(Retriever):
             outcome of every explorer.
         """
         try:
-            search = ExploratorySearchModel(
-                query_text=query_text,
-                num_seeds=num_seeds,
-                max_turns=max_turns,
-                hops_per_turn=hops_per_turn,
-                top_k=top_k,
+            search = ExploratorySearchModel.model_validate(
+                {
+                    "query_text": query_text,
+                    "num_seeds": num_seeds,
+                    "max_turns": max_turns,
+                    "hops_per_turn": hops_per_turn,
+                    "top_k": top_k,
+                    "slots": slots,
+                },
+                context={
+                    "max_slots": self.config.max_slots,
+                    "has_slot_llm": self.slot_llm is not None,
+                },
             )
             config = self._config_for(
                 num_seeds=search.num_seeds,
@@ -281,15 +318,29 @@ class ExploratoryRetriever(Retriever):
             else None
         )
 
-        # Slots and seeds do not depend on each other: they are computed together.
-        generator = SlotGenerator(self.slot_llm, max_slots=config.max_slots)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            slots_future = pool.submit(generator.generate, query_text)
-            seeds_future = pool.submit(self.seed_resolver.resolve, query_text, config)
-            generation = slots_future.result()
-            seeds = seeds_future.result()
-        slots = generation.slots
-        slot_info = [{"name": s.name, "description": s.description} for s in slots]
+        if search.slots is not None:
+            # Slots given by the caller: no LLM call, the seeds are the only step left.
+            generation = SlotGeneration(
+                [
+                    Slot(name=f"slot_{i}", description=d)
+                    for i, d in enumerate(search.slots)
+                ]
+            )
+            slots_source = "caller"
+            seeds = self.seed_resolver.resolve(query_text, config)
+        else:
+            # Slots and seeds do not depend on each other: they are computed together.
+            generator = SlotGenerator(self.slot_llm, max_slots=config.max_slots)
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                slots_future = pool.submit(generator.generate, query_text)
+                seeds_future = pool.submit(
+                    self.seed_resolver.resolve, query_text, config
+                )
+                generation = slots_future.result()
+                seeds = seeds_future.result()
+            slots_source = "generated"
+        slot_list = generation.slots
+        slot_info = [{"name": s.name, "description": s.description} for s in slot_list]
         degraded: dict[str, Any] = {
             "slots_fallback": generation.fallback,
             "missing_seed_ids": seeds.missing_ids,
@@ -301,6 +352,7 @@ class ExploratoryRetriever(Retriever):
                     "status": "not_found",
                     "reason": "no_seeds",
                     "slots": slot_info,
+                    "slots_source": slots_source,
                     "degraded": degraded,
                 },
             )
@@ -312,10 +364,10 @@ class ExploratoryRetriever(Retriever):
             config, self._node_formatter, self._relationship_formatter
         )
         reports = self._explore(
-            query_text, seeds.nodes, slots, config, decisions, deadline
+            query_text, seeds.nodes, slot_list, config, decisions, deadline
         )
         self._check_failures(reports)
-        merged = merge_reports(reports, slots, config, output)
+        merged = merge_reports(reports, slot_list, config, output)
 
         records = [
             neo4j.Record(
@@ -369,6 +421,7 @@ class ExploratoryRetriever(Retriever):
                 }
                 for r in reports
             ],
+            "slots_source": slots_source,
             "degraded": degraded,
         }
         if self.return_trace:
