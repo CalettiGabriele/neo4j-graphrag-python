@@ -110,3 +110,60 @@ def test_custom_formatters() -> None:
         relationship_formatter=lambda r: r.type.lower(),
     )
     assert v.step(BETA, REL, ACME) == "<2> —[supplies]→ <1>"
+
+
+def _chain(*names: str) -> tuple[list[GraphNode], list[GraphRelationship]]:
+    nodes = [GraphNode(n, ["N"], {"name": n}) for n in names]
+    rels = [
+        GraphRelationship(f"{a}-{b}", f"R_{b}", a, b) for a, b in zip(names, names[1:])
+    ]
+    return nodes, rels
+
+
+def test_tree_writes_every_relationship_once() -> None:
+    a_b_c = _chain("a", "b", "c")
+    a_b_d = _chain("a", "b", "d")
+    text = verbalizer().tree([(*a_b_c, 0.9), (*a_b_d, 0.8)])
+    assert text.splitlines() == [
+        'N "a"',
+        '- [R_b] → N "b"',
+        '  - [R_c] → N "c"',
+        '  - [R_d] → N "d"',
+    ]
+
+
+def test_tree_sorts_branches_by_their_best_score() -> None:
+    low = _chain("a", "x")
+    high = _chain("a", "y", "z")
+    text = verbalizer().tree([(*low, 0.4), (*high, 0.9)])
+    lines = text.splitlines()
+    assert lines[1].endswith('N "y"') and lines[3].endswith('N "x"')
+
+
+def test_tree_shows_the_direction_of_every_relationship() -> None:
+    nodes = [GraphNode("a", ["N"], {"name": "a"}), GraphNode("b", ["N"], {"name": "b"})]
+    incoming = GraphRelationship("r", "OWNS", "b", "a", {"since": 2020})
+    text = verbalizer().tree([(nodes, [incoming], 1.0)])
+    assert text.splitlines()[1] == '- [OWNS {since: 2020}] ← N "b"'
+
+
+def test_tree_of_a_single_node_and_of_no_paths() -> None:
+    node = GraphNode("a", ["N"], {"name": "a"})
+    assert verbalizer().tree([([node], [], 1.0)]) == 'N "a"'
+    assert verbalizer().tree([]) == ""
+
+
+def test_tree_rejects_paths_with_different_roots() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="same node"):
+        verbalizer().tree([(*_chain("a", "b"), 1.0), (*_chain("x", "y"), 1.0)])
+
+
+def test_tree_uses_the_custom_formatters() -> None:
+    v = Verbalizer(
+        ExplorationConfig(),
+        node_formatter=lambda n: f"<{n.id}>",
+        relationship_formatter=lambda r: r.type.lower(),
+    )
+    assert v.tree([(*_chain("a", "b"), 1.0)]) == "<a>\n- [r_b] → <b>"

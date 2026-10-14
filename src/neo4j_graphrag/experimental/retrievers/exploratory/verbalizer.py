@@ -30,6 +30,22 @@ RelationshipFormatter = Callable[[GraphRelationship], str]
 _NAME_PROPERTIES = ("name", "title", "label", "id")
 
 
+class _TreeNode:
+    """A node of the tree written by :meth:`Verbalizer.tree`."""
+
+    def __init__(
+        self,
+        node: GraphNode,
+        relationship: Optional[GraphRelationship] = None,
+        forward: bool = True,
+    ) -> None:
+        self.node = node
+        self.relationship = relationship
+        self.forward = forward
+        self.children: dict[tuple[str, str], "_TreeNode"] = {}
+        self.best = 0.0
+
+
 class Verbalizer:
     """Turns nodes, relationships and paths into text.
 
@@ -162,6 +178,58 @@ class Verbalizer:
             for i, rel in enumerate(relationships)
         ]
         return "; ".join(parts)
+
+    def tree(
+        self,
+        paths: Sequence[tuple[Sequence[GraphNode], Sequence[GraphRelationship], float]],
+    ) -> str:
+        """Paths that start from the same node, written as one indented tree.
+
+        Every relationship appears once, however many paths go through it. The
+        first line is the root; each following line is a hop, indented by its
+        depth: ``- [TYPE] → node`` for a relationship that goes from the parent
+        to the node, ``- [TYPE] ← node`` for one that goes from the node to the
+        parent. Branches are sorted by the best score found under them.
+
+        Args:
+            paths: ``(nodes, relationships, score)`` of every path. All the paths
+                must start from the same node.
+        """
+        root: Optional[_TreeNode] = None
+        for nodes, relationships, score in paths:
+            if root is None:
+                root = _TreeNode(nodes[0])
+            elif nodes[0].id != root.node.id:
+                raise ValueError(
+                    "all the paths of a tree must start from the same node"
+                )
+            current = root
+            current.best = max(current.best, score)
+            for i, relationship in enumerate(relationships):
+                child_node = nodes[i + 1]
+                key = (relationship.id, child_node.id)
+                child = current.children.get(key)
+                if child is None:
+                    forward = relationship.start_id == nodes[i].id
+                    child = _TreeNode(child_node, relationship, forward)
+                    current.children[key] = child
+                child.best = max(child.best, score)
+                current = child
+        if root is None:
+            return ""
+        lines = [self.node(root.node)]
+        self._tree_lines(root, 0, lines)
+        return "\n".join(lines)
+
+    def _tree_lines(self, parent: "_TreeNode", depth: int, lines: list[str]) -> None:
+        for child in sorted(parent.children.values(), key=lambda c: -c.best):
+            assert child.relationship is not None
+            arrow = "→" if child.forward else "←"
+            relationship = self.relationship(child.relationship)
+            lines.append(
+                f"{'  ' * depth}- [{relationship}] {arrow} {self.node(child.node)}"
+            )
+            self._tree_lines(child, depth + 1, lines)
 
     def type_summary(self, summary: RelationshipTypeSummary) -> str:
         arrow = "outgoing" if summary.direction == "out" else "incoming"
