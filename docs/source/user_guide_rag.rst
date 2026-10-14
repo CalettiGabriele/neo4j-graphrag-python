@@ -1444,7 +1444,20 @@ How a search works:
    which candidates are worth keeping and which slots are satisfied. The thresholds of `ExplorationConfig` turn
    the probabilities into decisions: continue, stop and discard, or stop and return. Nodes with too many neighbors are
    explored through their relationship types.
-4. The reports are merged, deduplicated and ranked. Every result is a path of the graph written in natural language.
+4. The reports are merged, deduplicated and ranked. The paths that start from the same node are written as one tree,
+   so a relationship shared by several paths appears once. Every result is such a tree:
+
+   .. code:: text
+
+       Company "ACME" (sector: "Automotive")
+       - [MAIN_CUSTOMER {share: 0.4}] → Company "Beta"
+         - [SUPPLIED_BY] → Company "Delta"
+           - [RECEIVED] → Sanction "Fine 2025" (year: 2025, status: "final")
+         - [SUPPLIED_BY] → Company "Gamma"
+           - [RECEIVED] → Sanction "Fine 2023" (year: 2023, status: "revoked")
+
+   `[TYPE] → node` is a relationship that goes from the line above (the parent) to the node, `[TYPE] ← node` one that
+   goes from the node to the parent. Branches are sorted by score.
 
 .. code:: python
 
@@ -1476,9 +1489,12 @@ With `hops_per_turn=2` the model sees chains of two relationships at once, which
 to the answer, at the price of more candidates per request.
 
 `num_seeds`, `max_turns`, `hops_per_turn` and `top_k` are validated like the parameters of the other retrievers:
-invalid values raise a `SearchValidationError`.
+invalid values raise a `SearchValidationError`. `top_k` limits the number of nodes returned: since the nodes are grouped
+in trees, the number of results can be smaller. With `ExplorationConfig(group_paths=False)` every node is a result of its
+own, written as a full path from the starting node.
 
-The metadata of the result tell the outcome of the search (`sufficient`, `partial` or `not_found`), which slots were
+The `metadata` of every result tell the score of its tree and, for each node in it, the score, the explorers that found
+it and the probabilities along its path. The metadata of the search tell the outcome of the search (`sufficient`, `partial` or `not_found`), which slots were
 covered and what each explorer did. The `degraded` key tells whether the search ran in a degraded mode: slots that
 could not be generated, failed or timed out explorers, truncated neighborhoods, seeds not found in the database.
 Create the retriever with `return_trace=True` to also get the decision taken at every turn, which is useful to

@@ -84,8 +84,9 @@ class ExploratoryRetriever(Retriever):
        continue or stop, which candidates are worth keeping, and which slots are
        satisfied. The thresholds of ``config`` turn those probabilities into
        decisions. Explorers share nothing and run in parallel.
-    4. The reports are merged, deduplicated and ranked; each result is a path of
-       the graph written in natural language.
+    4. The reports are merged, deduplicated and ranked. The paths that start from
+       the same node are written as one tree, so a relationship shared by several
+       paths appears once; each result is such a tree.
 
     Known limits: questions that need a complete list or an aggregation ("all
     the...", "how many...") cannot be answered reliably by pruned navigation;
