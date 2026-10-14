@@ -47,7 +47,8 @@ with neo4j.GraphDatabase.driver(URI, auth=AUTH) as driver:
         driver,
         # Fast model answering closed questions with probabilities.
         system_one_model=OpenAIDecisionModel(),
-        # Generates, once per question, the pieces of information to look for.
+        # Generates, once per question, the pieces of information to look for
+        # ("slots") when a search does not give them. Can be None if every search does.
         slot_llm=OpenAILLM(model_name="gpt-4o"),
         seed_retrievers=[seeds],
         config=ExplorationConfig(
@@ -69,6 +70,18 @@ with neo4j.GraphDatabase.driver(URI, auth=AUTH) as driver:
     metadata = result.metadata or {}
     print(metadata.get("status"), metadata.get("slots"))
     print("degraded:", metadata.get("degraded"))
+
+    # Faster: give the slots yourself (e.g. from an agent that planned the question);
+    # the LLM call that writes them, often half of the search time, is skipped.
+    result = retriever.search(
+        query_text="Which suppliers of the main customer of ACME were sanctioned?",
+        slots=[
+            "the main customer of ACME",
+            "the suppliers of that customer",
+            "the sanctions received by those suppliers",
+        ],
+    )
+    print((result.metadata or {}).get("slots_source"))  # "caller"
 
     # ...or in a GraphRAG pipeline. Search options can be overridden per search.
     rag = GraphRAG(retriever=retriever, llm=OpenAILLM(model_name="gpt-4o"))

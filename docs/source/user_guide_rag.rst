@@ -1430,13 +1430,14 @@ do not look like the question and a vector search cannot find them.
 
 It splits the work between two kinds of models:
 
-- an LLM, called once per search, that writes the *slots*: the pieces of information the context must contain;
+- an LLM, called once per search, that writes the *slots*: the pieces of information the context must contain
+  (the caller can give them instead, see below);
 - a **System One Model**, a fast model that does not write text but answers closed questions with probabilities
   (for instance the OpenAI Decisions API).
 
 How a search works:
 
-1. The LLM writes the slots.
+1. The LLM writes the slots, unless the search gives them.
 2. The seed retrievers (any retriever returning the node `elementId`, such as `VectorRetriever`) find the starting nodes.
    Chunks created by `SimpleKGPipeline` are replaced by the entities extracted from them.
 3. One **explorer** starts from each seed. Explorers are independent and run in parallel. At every turn an explorer
@@ -1488,7 +1489,26 @@ How a search works:
 With `hops_per_turn=2` the model sees chains of two relationships at once, which helps with nodes that are only a bridge
 to the answer, at the price of more candidates per request.
 
-`num_seeds`, `max_turns`, `hops_per_turn` and `top_k` are validated like the parameters of the other retrievers:
+**Giving the slots.** Writing the slots is the slowest step of a search (often half of its time) and nothing can start
+before it ends. When the caller already knows what to look for, for instance an agent that planned the question, it can
+pass the slots, one short sentence each, and no LLM call is made:
+
+.. code:: python
+
+    retriever.search(
+        "Which suppliers of the main customer of ACME were sanctioned?",
+        slots=["the main customer of ACME", "the suppliers of that customer", "the sanctions they received"],
+    )
+
+    # the same through GraphRAG
+    rag.search("...", retriever_config={"slots": ["the main customer of ACME", "..."]})
+
+At most `max_slots` slots can be given. The metadata key `slots_source` tells whether the slots were `"caller"` or
+`"generated"`. `slot_llm` can be `None`: every search must then give its slots, otherwise a `SearchValidationError`
+is raised. When the retriever is used as a tool (`convert_to_tool`), `slots` is an optional array of strings, so an agent
+can fill it.
+
+`num_seeds`, `max_turns`, `hops_per_turn`, `top_k` and `slots` are validated like the parameters of the other retrievers:
 invalid values raise a `SearchValidationError`. `top_k` limits the number of nodes returned: since the nodes are grouped
 in trees, the number of results can be smaller. With `ExplorationConfig(group_paths=False)` every node is a result of its
 own, written as a full path from the starting node.
