@@ -23,6 +23,7 @@ from .types import (
     KeptItem,
     MergedItem,
     MergedResult,
+    ResultGroup,
     Slot,
 )
 from .verbalizer import Verbalizer
@@ -47,9 +48,14 @@ def merge_reports(
     Items are deduplicated by node, keeping the best path. With
     ``config.only_maximal_paths``, items whose node lies inside the path of
     another item are dropped. Nodes found by several explorers get a bonus.
-    Partial reports are included; discarded, empty and failed explorers only
-    show up in the metadata of the search. ``verbalizer`` writes the content of
-    the items: use :meth:`Verbalizer.for_output`.
+    At most ``config.max_output_items`` items are kept. Partial reports are
+    included; discarded, empty and failed explorers only show up in the
+    metadata of the search.
+
+    The items are then presented in groups (:func:`group_items`): with
+    ``config.group_paths`` the paths starting from the same node are written as
+    one tree, so shared relationships are not repeated. ``verbalizer`` writes
+    the text: use :meth:`Verbalizer.for_output`.
     """
     best: dict[str, tuple[float, KeptItem]] = {}
     found_by: dict[str, list[str]] = {}
@@ -85,6 +91,8 @@ def merge_reports(
                 score=score + config.multi_explorer_bonus * (len(explorers) - 1),
                 explorers=explorers,
                 path_probabilities=list(item.step_probabilities),
+                path_nodes=list(item.path_nodes),
+                path_relationships=list(item.path_relationships),
             )
         )
     merged.sort(key=lambda m: -m.score)
@@ -100,6 +108,40 @@ def merge_reports(
     return MergedResult(
         status=status,
         items=merged,
+        groups=group_items(merged, config, verbalizer),
         slot_probabilities=slot_probabilities,
         covered_slots=sorted(covered),
     )
+
+
+def group_items(
+    items: Sequence[MergedItem], config: ExplorationConfig, verbalizer: Verbalizer
+) -> list[ResultGroup]:
+    """Group the items in results, best first.
+
+    With ``config.group_paths`` the items whose paths start from the same node
+    form one group, written as a tree; the score of the group is the best score
+    of its items. Otherwise every item is a group of its own, written as a path.
+    """
+    if not config.group_paths:
+        return [ResultGroup(i.content, i.score, list(i.explorers), [i]) for i in items]
+    by_root: dict[str, list[MergedItem]] = {}
+    for item in items:
+        by_root.setdefault(item.path_nodes[0].id, []).append(item)
+    groups = []
+    for members in by_root.values():
+        explorers: list[str] = []
+        for member in members:
+            explorers += [e for e in member.explorers if e not in explorers]
+        groups.append(
+            ResultGroup(
+                content=verbalizer.tree(
+                    [(m.path_nodes, m.path_relationships, m.score) for m in members]
+                ),
+                score=max(m.score for m in members),
+                explorers=explorers,
+                items=members,
+            )
+        )
+    groups.sort(key=lambda g: -g.score)
+    return groups

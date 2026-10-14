@@ -64,7 +64,7 @@ DEFAULT_PARAMETER_DESCRIPTIONS = {
     "num_seeds": "Optional. Number of starting points of the exploration (1-10 is typical).",
     "max_turns": "Optional. Maximum number of exploration steps from each starting point.",
     "hops_per_turn": "Optional. Relationships looked ahead at every step, between 1 and 3.",
-    "top_k": "Optional. Maximum number of results.",
+    "top_k": "Optional. Maximum number of nodes in the results.",
 }
 
 
@@ -242,7 +242,8 @@ class ExploratoryRetriever(Retriever):
             max_turns (Optional[int]): Maximum number of turns of every explorer. Overrides the configuration.
             hops_per_turn (Optional[int]): How many relationships ahead the model sees at every turn
                 (1 to 3). Overrides the configuration.
-            top_k (Optional[int]): Maximum number of results. Overrides ``max_output_items``.
+            top_k (Optional[int]): Maximum number of nodes returned. Overrides ``max_output_items``.
+                The nodes are presented in groups, see ``ExplorationConfig.group_paths``.
 
         Raises:
             SearchValidationError: If the arguments are not valid.
@@ -250,8 +251,11 @@ class ExploratoryRetriever(Retriever):
                 System One Model cannot be reached.
 
         Returns:
-            RawSearchResult: One record per path, with ``content`` and ``metadata``. The
-            metadata of the result describe the slots and the outcome of every explorer.
+            RawSearchResult: One record per result. With ``group_paths`` (the default) a
+            result is a tree: the paths that start from the same node, written once. The
+            ``metadata`` of a result tell its score and, for every node it contains, the score and the
+            explorers that found it. The metadata of the search describe the slots and the
+            outcome of every explorer.
         """
         try:
             search = ExploratorySearchModel(
@@ -315,16 +319,23 @@ class ExploratoryRetriever(Retriever):
         records = [
             neo4j.Record(
                 {
-                    "content": item.content,
+                    "content": group.content,
                     "metadata": {
-                        "node_id": item.node_id,
-                        "score": item.score,
-                        "explorers": item.explorers,
-                        "path_probabilities": item.path_probabilities,
+                        "score": group.score,
+                        "explorers": group.explorers,
+                        "nodes": [
+                            {
+                                "node_id": item.node_id,
+                                "score": item.score,
+                                "explorers": item.explorers,
+                                "path_probabilities": item.path_probabilities,
+                            }
+                            for item in group.items
+                        ],
                     },
                 }
             )
-            for item in merged.items
+            for group in merged.groups
         ]
         degraded.update(
             {

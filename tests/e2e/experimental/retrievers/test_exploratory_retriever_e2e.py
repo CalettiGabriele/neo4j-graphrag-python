@@ -241,6 +241,9 @@ def test_exploration_follows_the_chain_to_the_sanction(
     # the status of the sanction is part of the context
     assert 'status: "revoked"' in text
     assert "Torino" not in text  # the irrelevant branch was not kept
+    # Gamma and Delta share the path from ACME to Beta, which is written once
+    assert text.count("MAIN_CUSTOMER") == 1 and text.count("SUPPLIED_BY") == 2
+    assert len(result.items) == 1
     assert model.requests <= 5
 
 

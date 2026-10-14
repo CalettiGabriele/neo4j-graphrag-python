@@ -93,10 +93,18 @@ def test_search_returns_paths_and_metadata() -> None:
         "truncations": 0,
     }
     assert result.metadata["trace"]["acme"][0]["turn"] == 1
-    # Only maximal paths: ACME→Beta is a prefix of ACME→Beta→Gamma
-    contents = [i.content for i in result.items]
-    assert len(contents) == 1
-    assert "cliente_principale" in contents[0] and "fornito_da" in contents[0]
+    # One tree for the seed: Beta is written once, with Gamma under it
+    [item] = result.items
+    assert item.content.splitlines() == [
+        'Company "acme"',
+        '- [cliente_principale] → Company "beta"',
+        '  - [fornito_da] → Company "gamma"',
+    ]
+    assert item.metadata is not None
+    assert item.metadata["explorers"] == ["acme"]
+    [node] = item.metadata["nodes"]
+    assert node["node_id"] == "gamma" and node["path_probabilities"] == [0.8, 0.9]
+    assert item.metadata["score"] == node["score"]
 
 
 def test_trace_is_off_by_default() -> None:
@@ -121,13 +129,31 @@ def test_invalid_arguments_raise_search_validation_error(
         make().search(**kwargs)
 
 
-def test_top_k_limits_the_results() -> None:
+def test_top_k_limits_the_nodes_of_the_results() -> None:
     model = ScriptedModel(
         [{"keep:torino": 0.9, "keep:automotive": 0.9, "keep:beta": 0.9}]
     )
     retriever = make(model=model, config=ExplorationConfig(max_turns=1))
-    assert len(retriever.search("q").items) == 3
-    assert len(retriever.search("q", top_k=2).items) == 2
+
+    def nodes(**kwargs: Any) -> int:
+        result = retriever.search("q", **kwargs)
+        return sum(len((i.metadata or {})["nodes"]) for i in result.items)
+
+    assert nodes() == 3
+    assert nodes(top_k=2) == 2
+
+
+def test_results_can_be_left_ungrouped() -> None:
+    model = ScriptedModel(
+        [{"keep:torino": 0.9, "keep:automotive": 0.9, "keep:beta": 0.9}]
+    )
+    retriever = make(
+        model=model, config=ExplorationConfig(max_turns=1, group_paths=False)
+    )
+    result = retriever.search("q")
+    assert len(result.items) == 3
+    assert all("—[" in i.content for i in result.items)
+    assert all(len((i.metadata or {})["nodes"]) == 1 for i in result.items)
 
 
 def test_graphrag_retriever_config_with_top_k_works() -> None:

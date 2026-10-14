@@ -93,6 +93,7 @@ class ExplorationConfig(BaseModel):
     output_max_properties: int = Field(default=20, ge=1)
     output_max_property_chars: int = Field(default=2000, ge=10)
     only_maximal_paths: bool = True
+    group_paths: bool = True
 
     @model_validator(mode="after")
     def _check_thresholds(self) -> "ExplorationConfig":
@@ -182,17 +183,33 @@ class ExplorerReport:
 
 @dataclass
 class MergedItem:
+    """A node returned by the search, with the path that leads to it."""
+
     node_id: str
     content: str
     score: float
     explorers: list[str]
     path_probabilities: list[float]
+    path_nodes: list[GraphNode] = field(default_factory=list)
+    path_relationships: list[GraphRelationship] = field(default_factory=list)
+
+
+@dataclass
+class ResultGroup:
+    """One result of the search: the paths that start from the same node written
+    as a tree (or, without grouping, a single path)."""
+
+    content: str
+    score: float
+    explorers: list[str]
+    items: list[MergedItem]
 
 
 @dataclass
 class MergedResult:
     status: Literal["sufficient", "partial", "not_found"]
     items: list[MergedItem]
+    groups: list[ResultGroup]
     slot_probabilities: dict[int, float]
     covered_slots: list[int]
 

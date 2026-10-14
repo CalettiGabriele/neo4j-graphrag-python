@@ -7,6 +7,7 @@ from neo4j_graphrag.experimental.retrievers.exploratory.types import (
     ExplorationConfig,
     ExplorerReport,
     GraphNode,
+    GraphRelationship,
     KeptItem,
     Slot,
 )
@@ -16,9 +17,12 @@ SLOTS = [Slot(name="a", description="a"), Slot(name="b", description="b")]
 
 
 def item(node_id: str, *probabilities: float, via: tuple[str, ...] = ()) -> KeptItem:
-    n = GraphNode(node_id, ["N"], {"name": node_id})
-    path = [GraphNode(v, ["N"], {"name": v}) for v in via] + [n]
-    return KeptItem(n, path, [], list(probabilities))
+    names = (*via, node_id)
+    nodes = [GraphNode(n, ["N"], {"name": n}) for n in names]
+    relationships = [
+        GraphRelationship(f"{a}-{b}", f"R_{b}", a, b) for a, b in zip(names, names[1:])
+    ]
+    return KeptItem(nodes[-1], nodes, relationships, list(probabilities))
 
 
 def report(
@@ -98,8 +102,8 @@ def test_status_is_partial_when_a_slot_is_missing() -> None:
 
 
 def test_content_is_the_verbalized_path() -> None:
-    result = merge([report("s", "partial", [item("a", 0.9)], [], {})])
-    assert result.items[0].content == 'N "a"'
+    result = merge([report("s", "partial", [item("b", 0.9, via=("a",))], [], {})])
+    assert result.items[0].content == 'N "a" —[R_b]→ N "b"'
 
 
 def test_only_maximal_paths_are_returned() -> None:
@@ -122,3 +126,96 @@ def test_only_maximal_paths_are_returned() -> None:
         "c",
         "d",
     }
+
+
+def test_paths_with_the_same_root_are_grouped_in_one_tree() -> None:
+    reports = [
+        report(
+            "s",
+            "partial",
+            [
+                item("c", 0.9, 0.9, via=("a", "b")),
+                item("d", 0.8, 0.8, via=("a", "b")),
+                item("e", 0.7, via=("a",)),
+            ],
+            [],
+            {},
+        )
+    ]
+    result = merge(reports)
+    [group] = result.groups
+    assert group.content.splitlines() == [
+        'N "a"',
+        '- [R_b] → N "b"',
+        '  - [R_c] → N "c"',
+        '  - [R_d] → N "d"',
+        '- [R_e] → N "e"',
+    ]
+    assert group.content.count("[R_b]") == 1  # the shared relationship is written once
+    assert {i.node_id for i in group.items} == {"c", "d", "e"}
+    assert group.score == max(i.score for i in group.items)
+    assert group.explorers == ["s"]
+
+
+def test_different_roots_make_different_trees_sorted_by_score() -> None:
+    reports = [
+        report(
+            "s",
+            "partial",
+            [item("b", 0.4, via=("a",)), item("y", 0.9, via=("x",))],
+            [],
+            {},
+        )
+    ]
+    groups = merge(reports).groups
+    assert [g.content.splitlines()[0] for g in groups] == ['N "x"', 'N "a"']
+    assert [g.score for g in groups] == sorted((g.score for g in groups), reverse=True)
+
+
+def test_group_explorers_are_the_union_of_those_of_its_items() -> None:
+    reports = [
+        report("s1", "partial", [item("b", 0.9, via=("a",))], [], {}),
+        report("s2", "partial", [item("c", 0.9, via=("a",))], [], {}),
+    ]
+    [group] = merge(reports).groups
+    assert group.explorers == ["s1", "s2"]
+
+
+def test_without_grouping_every_item_is_a_path_of_its_own() -> None:
+    reports = [
+        report(
+            "s",
+            "partial",
+            [item("b", 0.9, via=("a",)), item("c", 0.8, via=("a",))],
+            [],
+            {},
+        )
+    ]
+    groups = merge(reports, group_paths=False).groups
+    assert [g.content for g in groups] == [
+        'N "a" —[R_b]→ N "b"',
+        'N "a" —[R_c]→ N "c"',
+    ]
+    assert all(len(g.items) == 1 for g in groups)
+
+
+def test_the_limit_applies_to_nodes_before_grouping() -> None:
+    reports = [
+        report(
+            "s",
+            "partial",
+            [
+                item("b", 0.9, via=("a",)),
+                item("c", 0.8, via=("a",)),
+                item("d", 0.7, via=("a",)),
+            ],
+            [],
+            {},
+        )
+    ]
+    [group] = merge(reports, max_output_items=2).groups
+    assert [i.node_id for i in group.items] == ["b", "c"]
+
+
+def test_no_items_means_no_groups() -> None:
+    assert merge([report("s", "discarded", [], [], {})]).groups == []
