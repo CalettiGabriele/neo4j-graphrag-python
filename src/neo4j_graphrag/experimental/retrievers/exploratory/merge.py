@@ -46,8 +46,8 @@ def merge_reports(
     """Merge the reports of independent explorers.
 
     Items are deduplicated by node, keeping the best path. With
-    ``config.only_maximal_paths``, items whose node lies inside the path of
-    another item are dropped. Nodes found by several explorers get a bonus.
+    ``config.only_maximal_paths``, items whose path is the beginning of the
+    path of another item are dropped. Nodes found by several explorers get a bonus.
     At most ``config.max_output_items`` items are kept. Partial reports are
     included; discarded, empty and failed explorers only show up in the
     metadata of the search.
@@ -76,10 +76,21 @@ def merge_reports(
                 best[node_id] = (score, item)
 
     if config.only_maximal_paths:
-        # A node lying inside the path of another result adds nothing: its path
-        # is a prefix of that one. Dropping it avoids repeating the same text.
-        inner = {n.id for _, item in best.values() for n in item.path_nodes[:-1]}
-        best = {k: v for k, v in best.items() if k not in inner}
+        # An item whose path is the beginning of another item's path adds nothing: the
+        # longer path already says it. Dropping it avoids repeating the same text. Only
+        # real prefixes count: a node that merely lies inside another path may have been
+        # reached by a different route, and two explorers that find each other's seed
+        # would otherwise discard every item.
+        prefixes = {
+            tuple(n.id for n in item.path_nodes[:length])
+            for _, item in best.values()
+            for length in range(1, len(item.path_nodes))
+        }
+        best = {
+            k: v
+            for k, v in best.items()
+            if tuple(n.id for n in v[1].path_nodes) not in prefixes
+        }
 
     merged: list[MergedItem] = []
     for node_id, (score, item) in best.items():

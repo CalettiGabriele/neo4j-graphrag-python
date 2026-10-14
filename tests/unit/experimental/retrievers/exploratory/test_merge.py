@@ -128,6 +128,43 @@ def test_only_maximal_paths_are_returned() -> None:
     }
 
 
+def test_explorers_that_reach_each_other_do_not_cancel_out() -> None:
+    # Two seeds linked through "m": each explorer finds the other seed, so every node lies
+    # inside the path of another one. Dropping by membership would leave nothing.
+    reports = [
+        report(
+            "a",
+            "partial",
+            [item("m", 0.9, via=("a",)), item("b", 0.8, 0.8, via=("a", "m"))],
+            [],
+            {},
+        ),
+        report(
+            "b",
+            "partial",
+            [item("m", 0.9, via=("b",)), item("a", 0.8, 0.8, via=("b", "m"))],
+            [],
+            {},
+        ),
+    ]
+    result = merge(reports)
+    assert {m.node_id for m in result.items} == {"a", "b"}
+    assert result.status == "partial"
+
+
+def test_a_node_reached_by_another_route_is_not_dropped() -> None:
+    reports = [
+        report(
+            "s",
+            "partial",
+            [item("b", 0.9, via=("a",)), item("c", 0.8, via=("x", "b"))],
+            [],
+            {},
+        )
+    ]
+    assert {m.node_id for m in merge(reports).items} == {"b", "c"}
+
+
 def test_paths_with_the_same_root_are_grouped_in_one_tree() -> None:
     reports = [
         report(
