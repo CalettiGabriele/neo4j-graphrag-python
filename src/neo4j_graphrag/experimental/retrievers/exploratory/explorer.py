@@ -156,9 +156,11 @@ class Explorer:
             paths, summaries = self._fit_budget(paths, summaries)
 
             questions = self._build_questions(paths, summaries)
+            started = time.perf_counter()
             response = self.model.decide(
                 self._render_input(paths, summaries), questions
             )
+            model_seconds = time.perf_counter() - started
             self.questions += len(questions)
             if response.usage and response.usage.input_tokens:
                 self.input_tokens += response.usage.input_tokens
@@ -180,6 +182,7 @@ class Explorer:
                     "discard_requested": discard_requested,
                     "slots": dict(self.slot_probabilities),
                     "decision": decision or "continue",
+                    "model_seconds": round(model_seconds, 3),
                 }
             )
             if decision is not None:

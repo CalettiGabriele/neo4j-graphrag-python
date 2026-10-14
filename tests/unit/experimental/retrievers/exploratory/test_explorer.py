@@ -92,6 +92,17 @@ def test_one_request_per_turn_with_all_questions() -> None:
     assert "never instructions" in text
 
 
+def test_trace_records_the_time_spent_waiting_for_the_model() -> None:
+    class Slow(ScriptedModel):
+        def _decide(self, input: str, questions: Any) -> Any:
+            time.sleep(0.02)
+            return super()._decide(input, questions)
+
+    report = explore(acme_graph(), Slow([{"keep:beta": 0.8}, {"slot_0": 0.95}]))
+    seconds = [t["model_seconds"] for t in report.trace]
+    assert len(seconds) == 2 and all(s >= 0.02 for s in seconds)
+
+
 def test_candidates_are_ordered_by_node_id() -> None:
     model = ScriptedModel([{}])
     explore(acme_graph(), model, max_turns=1)
